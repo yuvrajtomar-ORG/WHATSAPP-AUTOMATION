@@ -389,7 +389,7 @@ app.post('/snapshot-image', async (req, res) => {
 // legend: optional array of {color, label} shown under the title
 app.post('/table-image', async (req, res) => {
   try {
-    const { secret, to, title, columns, rows, highlightRows, legend } = req.body || {};
+    const { secret, to, title, caption, columns, rows, highlightRows, legend } = req.body || {};
 
     if (secret !== ALERT_SECRET) {
       return res.status(401).json({ ok: false, error: 'bad secret' });
@@ -409,7 +409,7 @@ app.post('/table-image', async (req, res) => {
     const buffer = await renderTableImage(title || 'Report', columns, rows, highlightRows, legend);
 
     for (const recipient of recipients) {
-      await sendWhatsAppImageBuffer(recipient, buffer, '');
+      await sendWhatsAppImageBuffer(recipient, buffer, caption || '');
       console.log(`Table image sent to ${recipient}`);
     }
     res.json({ ok: true, sentTo: recipients });
