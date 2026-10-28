@@ -24,6 +24,8 @@
  */
 
 const express = require('express');
+const fs = require('fs');
+const path = require('path');
 const {
   default: makeWASocket,
   useMultiFileAuthState,
@@ -39,12 +41,103 @@ const PORT = process.env.PORT || 3000; // Render sets PORT itself — do not har
 const ALERT_SECRET = 'change-this-shared-secret'; // must match WEBHOOK_SECRET in the .gs file
 const ALERT_TO = '919876543210'; // <-- YOUR WhatsApp number, country code + number, digits only
 const AUTH_FOLDER = process.env.AUTH_FOLDER || './auth_info'; // local, not persistent across redeploys on Render's free tier
+
+// FREE persistence fix: back up the WhatsApp login to a private GitHub
+// Gist, so it survives Render wiping the disk on every redeploy/restart.
+// Set these two as environment variables in Render (Settings → Environment),
+// NOT hardcoded here, since GITHUB_TOKEN is a secret.
+//   GITHUB_TOKEN  — a GitHub Personal Access Token with "gist" scope
+//   GIST_ID       — the ID of an existing (can be empty) secret Gist
+// If either is missing, the server just behaves as before (local only).
+const GITHUB_TOKEN = process.env.GITHUB_TOKEN || '';
+const GIST_ID = process.env.GIST_ID || '';
+const GIST_FILENAME = 'auth_backup.json';
 // ===================================
 
 let sock; // active WhatsApp socket, set once connected
 let latestQr = null; // most recent QR string, shown at GET /qr
 
+// ---- Gist-based auth backup (free alternative to a paid Render Disk) ----
+
+async function restoreAuthFromGist() {
+  if (!GITHUB_TOKEN || !GIST_ID) {
+    console.log('GITHUB_TOKEN/GIST_ID not set — skipping Gist restore (login will not survive redeploys).');
+    return;
+  }
+  try {
+    const res = await fetch(`https://api.github.com/gists/${GIST_ID}`, {
+      headers: {
+        Authorization: `Bearer ${GITHUB_TOKEN}`,
+        Accept: 'application/vnd.github+json',
+      },
+    });
+    if (!res.ok) {
+      console.log('Gist restore: no existing backup found (or fetch failed) — starting fresh.');
+      return;
+    }
+    const data = await res.json();
+    const file = data.files && data.files[GIST_FILENAME];
+    if (!file || !file.content) {
+      console.log('Gist restore: backup file empty — starting fresh.');
+      return;
+    }
+    const filesMap = JSON.parse(file.content); // { "creds.json": "<base64>", ... }
+    if (!fs.existsSync(AUTH_FOLDER)) fs.mkdirSync(AUTH_FOLDER, { recursive: true });
+    for (const [filename, base64Content] of Object.entries(filesMap)) {
+      fs.writeFileSync(path.join(AUTH_FOLDER, filename), Buffer.from(base64Content, 'base64'));
+    }
+    console.log(`Gist restore: restored ${Object.keys(filesMap).length} auth file(s) from backup.`);
+  } catch (err) {
+    console.error('Gist restore failed (continuing without it):', err.message);
+  }
+}
+
+let backupInFlight = false;
+let backupQueued = false;
+
+async function backupAuthToGist() {
+  if (!GITHUB_TOKEN || !GIST_ID) return;
+  if (backupInFlight) { backupQueued = true; return; } // debounce rapid creds.update bursts
+  backupInFlight = true;
+  try {
+    if (!fs.existsSync(AUTH_FOLDER)) return;
+    const filesMap = {};
+    for (const filename of fs.readdirSync(AUTH_FOLDER)) {
+      const fullPath = path.join(AUTH_FOLDER, filename);
+      if (fs.statSync(fullPath).isFile()) {
+        filesMap[filename] = fs.readFileSync(fullPath).toString('base64');
+      }
+    }
+    const res = await fetch(`https://api.github.com/gists/${GIST_ID}`, {
+      method: 'PATCH',
+      headers: {
+        Authorization: `Bearer ${GITHUB_TOKEN}`,
+        Accept: 'application/vnd.github+json',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        files: { [GIST_FILENAME]: { content: JSON.stringify(filesMap) } },
+      }),
+    });
+    if (!res.ok) {
+      console.error('Gist backup failed:', res.status, await res.text());
+    } else {
+      console.log('Gist backup: auth state saved.');
+    }
+  } catch (err) {
+    console.error('Gist backup error:', err.message);
+  } finally {
+    backupInFlight = false;
+    if (backupQueued) {
+      backupQueued = false;
+      backupAuthToGist();
+    }
+  }
+}
+
 async function startWhatsApp() {
+  await restoreAuthFromGist();
+
   const { state, saveCreds } = await useMultiFileAuthState(AUTH_FOLDER);
 
   sock = makeWASocket({
@@ -52,7 +145,10 @@ async function startWhatsApp() {
     printQRInTerminal: false, // we handle QR printing ourselves below for clarity
   });
 
-  sock.ev.on('creds.update', saveCreds);
+  sock.ev.on('creds.update', async () => {
+    await saveCreds();
+    backupAuthToGist(); // fire-and-forget, debounced
+  });
 
   sock.ev.on('connection.update', (update) => {
     const { connection, lastDisconnect, qr } = update;
