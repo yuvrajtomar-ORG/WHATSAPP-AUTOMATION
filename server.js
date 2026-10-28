@@ -99,16 +99,25 @@ app.post('/alert', async (req, res) => {
       return res.status(401).json({ ok: false, error: 'bad secret' });
     }
 
-    // Number from the sheet's Settings tab takes priority; falls back to
-    // the hardcoded ALERT_TO if the sheet didn't send one (e.g. no
-    // Settings tab set up, or the "to" field is blank).
-    const recipient = (to && String(to).trim()) || ALERT_TO;
+    // "to" can be a single number, an array of numbers (multiple
+    // recipients), or omitted entirely (falls back to ALERT_TO).
+    let recipients = [];
+    if (Array.isArray(to)) {
+      recipients = to.map((n) => String(n).trim()).filter(Boolean);
+    } else if (to && String(to).trim()) {
+      recipients = [String(to).trim()];
+    }
+    if (recipients.length === 0) {
+      recipients = [ALERT_TO];
+    }
 
     const text = message || `NG Delta alert — ${sheet} — ${date}: NG Delta is ${ngDelta} (expected 0).`;
 
-    await sendWhatsAppMessage(recipient, text);
-    console.log(`Alert sent to ${recipient}: ${text}`);
-    res.json({ ok: true, sentTo: recipient });
+    for (const recipient of recipients) {
+      await sendWhatsAppMessage(recipient, text);
+      console.log(`Alert sent to ${recipient}: ${text}`);
+    }
+    res.json({ ok: true, sentTo: recipients });
   } catch (err) {
     console.error('Failed to send alert:', err);
     res.status(500).json({ ok: false, error: String(err) });
