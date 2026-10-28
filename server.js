@@ -37,7 +37,7 @@ const { Boom } = require('@hapi/boom');
 const PORT = process.env.PORT || 3000; // Render sets PORT itself — do not hardcode
 const ALERT_SECRET = 'change-this-shared-secret'; // must match WEBHOOK_SECRET in the .gs file
 const ALERT_TO = '919876543210'; // <-- YOUR WhatsApp number, country code + number, digits only
-const AUTH_FOLDER = process.env.AUTH_FOLDER || './auth_info'; // mount a Render Disk at /data
+const AUTH_FOLDER = process.env.AUTH_FOLDER || './auth_info'; // local, not persistent across redeploys on Render's free tier
 // ===================================
 
 let sock; // active WhatsApp socket, set once connected
@@ -93,17 +93,22 @@ app.use(express.json());
 
 app.post('/alert', async (req, res) => {
   try {
-    const { secret, message, sheet, date, ngDelta } = req.body || {};
+    const { secret, message, sheet, date, ngDelta, to } = req.body || {};
 
     if (secret !== ALERT_SECRET) {
       return res.status(401).json({ ok: false, error: 'bad secret' });
     }
 
+    // Number from the sheet's Settings tab takes priority; falls back to
+    // the hardcoded ALERT_TO if the sheet didn't send one (e.g. no
+    // Settings tab set up, or the "to" field is blank).
+    const recipient = (to && String(to).trim()) || ALERT_TO;
+
     const text = message || `NG Delta alert — ${sheet} — ${date}: NG Delta is ${ngDelta} (expected 0).`;
 
-    await sendWhatsAppMessage(ALERT_TO, text);
-    console.log(`Alert sent: ${text}`);
-    res.json({ ok: true });
+    await sendWhatsAppMessage(recipient, text);
+    console.log(`Alert sent to ${recipient}: ${text}`);
+    res.json({ ok: true, sentTo: recipient });
   } catch (err) {
     console.error('Failed to send alert:', err);
     res.status(500).json({ ok: false, error: String(err) });
