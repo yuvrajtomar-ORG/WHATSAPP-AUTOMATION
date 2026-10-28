@@ -37,7 +37,7 @@ const { Boom } = require('@hapi/boom');
 const PORT = process.env.PORT || 3000; // Render sets PORT itself — do not hardcode
 const ALERT_SECRET = 'change-this-shared-secret'; // must match WEBHOOK_SECRET in the .gs file
 const ALERT_TO = '919876543210'; // <-- YOUR WhatsApp number, country code + number, digits only
-const AUTH_FOLDER = process.env.AUTH_FOLDER || '/data/auth_info'; // mount a Render Disk at /data
+const AUTH_FOLDER = process.env.AUTH_FOLDER || './auth_info'; // mount a Render Disk at /data
 // ===================================
 
 let sock; // active WhatsApp socket, set once connected
